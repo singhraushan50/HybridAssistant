@@ -2,7 +2,9 @@ package com.hybrid.assistant
 
 import android.Manifest
 import android.app.Application
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
@@ -18,6 +20,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -59,10 +62,14 @@ class VM(app: Application) : AndroidViewModel(app) {
     }
 
     fun startServer() = viewModelScope.launch {
-        sys("Starting llama-server in Termux…")
-        sys(runCatching { termux.startServer() }.getOrElse { "Failed: ${it.message}" })
-        repeat(40) { delay(1500); if (withContext(Dispatchers.IO) { LlmClient.health(cfg.localUrl) }) { refresh(); sys("Model ready."); return@launch } }
-        sys("Server not responding. Check ~/llm/server.log (is a .gguf in ~/llm/models?)")
+        sys("Starting llama-server in a Termux session…")
+        runCatching { termux.startSession("bash ~/llm/serve.sh") }.onFailure { sys("Failed: ${it.message}"); return@launch }
+        repeat(60) { delay(2000); if (withContext(Dispatchers.IO) { LlmClient.health(cfg.localUrl) }) { refresh(); sys("Model ready."); return@launch } }
+        sys("Server not responding. Log:\n" + runCatching { termux.run("tail -n 12 ~/llm/server.log") }.getOrDefault("(no log - did you tap Reinstall Termux scripts?)"))
+    }
+
+    fun updateScripts() = viewModelScope.launch {
+        sys(runCatching { termux.installScripts() }.getOrElse { "Failed: ${it.message}" })
     }
 
     fun toggleMic() {
@@ -91,14 +98,17 @@ class VM(app: Application) : AndroidViewModel(app) {
         history.add(Msg("user", text, img, wav?.let { b64(it) }))
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                for (step in 0..3) {
+                val routed = if (wav == null && img == null && cfg.tools) tools.route(text, ::ask) else null
+                if (routed != null) { msgs.add(UiMsg("assistant", routed, "action")); history.add(Msg("assistant", routed)) }
+                else for (step in 0..3) {
                     val (reply, via) = LlmClient.chat(history, cfg)
                     history.add(Msg("assistant", reply))
-                    val m = toolRe.find(reply)
-                    if (m == null) {
-                        msgs.add(UiMsg("assistant", reply.trim(), via)); if (cfg.speak) speaker.speak(reply); break
+                    val j = if (cfg.tools) toolRe.find(reply)?.let { runCatching { JSONObject(it.groupValues[1]) }.getOrNull() } else null
+                    if (j == null || j.optString("name").isEmpty()) {
+                        val clean = reply.replace(toolRe, "").trim().ifBlank { reply.trim() }
+                        msgs.add(UiMsg("assistant", clean, via)); if (cfg.speak) speaker.speak(clean); break
                     }
-                    val j = JSONObject(m.groupValues[1]); val name = j.getString("name")
+                    val name = j.getString("name")
                     msgs.add(UiMsg("tool", "🔧 $name ${j.optJSONObject("args") ?: ""}"))
                     val res = tools.run(name, j.optJSONObject("args") ?: JSONObject(), ::ask)
                     msgs.add(UiMsg("tool", "↳ ${res.take(400)}"))
@@ -127,7 +137,12 @@ fun Screen(vm: VM = viewModel()) {
     val list = rememberLazyListState()
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { vm.attach(it) }
     val micPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { if (it) vm.toggleMic() }
-    LaunchedEffect(Unit) { vm.refresh() }
+    val ctx = LocalContext.current
+    val contactsPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(Unit) {
+        if (ctx.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) contactsPerm.launch(Manifest.permission.READ_CONTACTS)
+        while (true) { vm.refresh(); delay(5000) }
+    }
     LaunchedEffect(vm.msgs.size) { if (vm.msgs.isNotEmpty()) list.animateScrollToItem(vm.msgs.size - 1) }
 
     Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
@@ -179,11 +194,13 @@ fun SettingsDialog(vm: VM, close: () -> Unit) {
                 Row { listOf("LOCAL" to "Offline", "AUTO" to "Auto fallback", "CLOUD" to "Cloud").forEach { (k, l) ->
                     FilterChip(c.mode == k, { c = c.copy(mode = k) }, { Text(l) }, Modifier.padding(end = 4.dp)) } }
                 Row(verticalAlignment = Alignment.CenterVertically) { Switch(c.speak, { c = c.copy(speak = it) }); Text("  Speak replies") }
+                Row(verticalAlignment = Alignment.CenterVertically) { Switch(c.tools, { c = c.copy(tools = it) }); Text("  Enable tools (open apps, call, SMS…)") }
                 OutlinedTextField(c.localUrl, { c = c.copy(localUrl = it) }, label = { Text("Local endpoint") }, singleLine = true)
                 OutlinedTextField(c.cloudUrl, { c = c.copy(cloudUrl = it) }, label = { Text("Cloud endpoint (OpenAI-compatible)") }, singleLine = true)
                 OutlinedTextField(c.cloudKey, { c = c.copy(cloudKey = it) }, label = { Text("API key") }, singleLine = true)
                 OutlinedTextField(c.cloudModel, { c = c.copy(cloudModel = it) }, label = { Text("Cloud model") }, singleLine = true)
                 OutlinedButton({ vm.setup(); close() }) { Text("Setup Termux (install scripts + build llama.cpp)") }
+                OutlinedButton({ vm.updateScripts(); close() }) { Text("Reinstall Termux scripts only") }
             }
         },
         confirmButton = { TextButton({ vm.saveCfg(c); close() }) { Text("Save") } },
