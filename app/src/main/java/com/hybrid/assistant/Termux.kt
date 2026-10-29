@@ -55,5 +55,14 @@ class Termux(private val ctx: Context) {
         return run(sb.toString())
     }
 
-    suspend fun startServer(): String = run("bash ~/llm/start_llm.sh")
+    /** Runs a command inside a real Termux session (not a short-lived background task) so it keeps running. */
+    fun startSession(cmd: String) {
+        val i = Intent("com.termux.RUN_COMMAND").setClassName("com.termux", "com.termux.app.RunCommandService")
+            .putExtra("com.termux.RUN_COMMAND_PATH", "$prefix/bin/bash")
+            .putExtra("com.termux.RUN_COMMAND_ARGUMENTS", arrayOf("-c", cmd))
+            .putExtra("com.termux.RUN_COMMAND_WORKDIR", home)
+            .putExtra("com.termux.RUN_COMMAND_BACKGROUND", false)
+            .putExtra("com.termux.RUN_COMMAND_SESSION_ACTION", "3")
+        ctx.startService(i)
+    }
 }
