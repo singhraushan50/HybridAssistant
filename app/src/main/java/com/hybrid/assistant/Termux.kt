@@ -44,7 +44,7 @@ class Termux(private val ctx: Context) {
         }
     }
 
-    /** Copies bundled scripts (assets/termux/*) into ~/llm inside Termux. */
+    /** Copies the bundled scripts from the assets termux folder into ~/llm inside Termux. */
     suspend fun installScripts(): String {
         val sb = StringBuilder("mkdir -p ~/llm/models ~/llm/kb;")
         for (n in ctx.assets.list("termux").orEmpty()) {
