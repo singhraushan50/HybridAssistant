@@ -30,7 +30,7 @@ class Prefs(ctx: Context) {
         .putString("cloudKey", c.cloudKey).putString("cloudModel", c.cloudModel).putBoolean("speak", c.speak).putBoolean("tools", c.tools).apply()
 }
 
-val BASE_PROMPT = "You are a helpful, concise assistant running privately on the user's Android phone. Answer chat, questions and voice messages directly in plain text."
+val BASE_PROMPT = "You are a helpful, concise assistant inside an Android app on the user's phone. Answer chat, questions and voice messages directly in plain text. You are connected to the phone through tools, so never claim you cannot open apps or make calls."
 val TOOL_PROMPT = """
 
 Tools exist, but use one ONLY when the user explicitly asks for a phone action (open a website or app, call, text, search their documents, run a command). For greetings, questions and normal chat, just answer in plain text and NEVER call a tool.
@@ -53,15 +53,15 @@ object LlmClient {
     /** Returns (reply, "local"|"cloud") */
     fun chat(history: List<Msg>, cfg: Cfg): Pair<String, String> {
         val sysPrompt = if (cfg.tools) BASE_PROMPT + TOOL_PROMPT else BASE_PROMPT
-        if (cfg.mode == "CLOUD") return post(cfg.cloudUrl, cfg.cloudKey, cfg.cloudModel, history, sysPrompt) to "cloud"
-        return try { post(cfg.localUrl, "", "local", history, sysPrompt) to "local" }
+        if (cfg.mode == "CLOUD") return post(cfg.cloudUrl, cfg.cloudKey, cfg.cloudModel, history, sysPrompt, false) to "cloud"
+        return try { post(cfg.localUrl, "", "local", history, sysPrompt, true) to "local" }
         catch (e: Exception) {
-            if (cfg.mode == "AUTO" && cfg.cloudKey.isNotBlank()) post(cfg.cloudUrl, cfg.cloudKey, cfg.cloudModel, history, sysPrompt) to "cloud"
+            if (cfg.mode == "AUTO" && cfg.cloudKey.isNotBlank()) post(cfg.cloudUrl, cfg.cloudKey, cfg.cloudModel, history, sysPrompt, false) to "cloud"
             else throw e
         }
     }
 
-    private fun post(base: String, key: String, model: String, history: List<Msg>, sysPrompt: String): String {
+    private fun post(base: String, key: String, model: String, history: List<Msg>, sysPrompt: String, local: Boolean): String {
         val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", sysPrompt))
         for (m in history) {
             if (m.imgB64 == null && m.wavB64 == null) { msgs.put(JSONObject().put("role", m.role).put("content", m.text)); continue }
@@ -71,7 +71,8 @@ object LlmClient {
             m.wavB64?.let { parts.put(JSONObject().put("type", "input_audio").put("input_audio", JSONObject().put("data", it).put("format", "wav"))) }
             msgs.put(JSONObject().put("role", m.role).put("content", parts))
         }
-        val body = JSONObject().put("model", model).put("messages", msgs).put("temperature", 0.7).put("max_tokens", 768)
+        val body = JSONObject().put("model", model).put("messages", msgs).put("temperature", 0.3).put("max_tokens", 768)
+        if (local) body.put("top_k", 50).put("repeat_penalty", 1.1)
         val c = URL(base.trimEnd('/') + "/chat/completions").openConnection() as HttpURLConnection
         c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 5000; c.readTimeout = 600_000
         c.setRequestProperty("Content-Type", "application/json")
