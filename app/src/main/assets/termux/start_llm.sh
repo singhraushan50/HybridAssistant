@@ -9,3 +9,4 @@ ARGS="-m $M --host 127.0.0.1 --port 8080 -c 4096 -t 4 --jinja"
 [ -n "$P" ] && ARGS="$ARGS --mmproj $P"
 nohup llama.cpp/build/bin/llama-server $ARGS > server.log 2>&1 &
 echo "started: $M ${P:+(+ $P)}"
+
