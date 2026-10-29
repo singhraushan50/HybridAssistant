@@ -18,27 +18,30 @@ data class Cfg(
     val cloudKey: String = "",
     val cloudModel: String = "gpt-4o-audio-preview",
     val speak: Boolean = true,
+    val tools: Boolean = true,
 )
 
 class Prefs(ctx: Context) {
     private val p = ctx.getSharedPreferences("cfg", Context.MODE_PRIVATE)
     fun load(): Cfg { val d = Cfg(); return Cfg(
         p.getString("mode", d.mode)!!, p.getString("localUrl", d.localUrl)!!, p.getString("cloudUrl", d.cloudUrl)!!,
-        p.getString("cloudKey", "")!!, p.getString("cloudModel", d.cloudModel)!!, p.getBoolean("speak", true)) }
+        p.getString("cloudKey", "")!!, p.getString("cloudModel", d.cloudModel)!!, p.getBoolean("speak", true), p.getBoolean("tools", true)) }
     fun save(c: Cfg) = p.edit().putString("mode", c.mode).putString("localUrl", c.localUrl).putString("cloudUrl", c.cloudUrl)
-        .putString("cloudKey", c.cloudKey).putString("cloudModel", c.cloudModel).putBoolean("speak", c.speak).apply()
+        .putString("cloudKey", c.cloudKey).putString("cloudModel", c.cloudModel).putBoolean("speak", c.speak).putBoolean("tools", c.tools).apply()
 }
 
-val SYSTEM_PROMPT = """You are a private on-device assistant running on an Android phone. Be concise.
-You can call tools. To call one, reply with ONLY: <tool>{"name":"TOOL","args":{...}}</tool>
-Tools:
-- open_url {url}            open a link in the browser (also https://wa.me/NUMBER?text=... for WhatsApp)
-- open_app {package}        launch an installed app by package name
-- dial {number}             open the phone dialer
-- sms {number,text}         open SMS composer with text prefilled
-- search_docs {query}       search the user's local knowledge base (offline)
-- shell {cmd}               run a shell command in Termux
-After a tool result arrives, answer the user normally. Never invent tool results."""
+val BASE_PROMPT = "You are a helpful, concise assistant running privately on the user's Android phone. Answer chat, questions and voice messages directly in plain text."
+val TOOL_PROMPT = """
+
+Tools exist, but use one ONLY when the user explicitly asks for a phone action (open a website or app, call, text, search their documents, run a command). For greetings, questions and normal chat, just answer in plain text and NEVER call a tool.
+To use a tool, reply with ONLY one line in exactly this JSON format and nothing else:
+<tool>{"name":"open_url","args":{"url":"https://example.com"}}</tool>
+Tool names and args: open_url{url}, open_app{package}, dial{number}, sms{number,text}, search_docs{query}, shell{cmd}.
+Examples:
+User: hello -> Hi! How can I help you?
+User: what is the capital of France -> The capital of France is Paris.
+User: open youtube -> <tool>{"name":"open_url","args":{"url":"https://youtube.com"}}</tool>
+After a tool result arrives, reply to the user in plain text. Never invent tool results."""
 
 /** OpenAI-compatible client: same code talks to local llama-server and the optional cloud endpoint. */
 object LlmClient {
@@ -49,16 +52,17 @@ object LlmClient {
 
     /** Returns (reply, "local"|"cloud") */
     fun chat(history: List<Msg>, cfg: Cfg): Pair<String, String> {
-        if (cfg.mode == "CLOUD") return post(cfg.cloudUrl, cfg.cloudKey, cfg.cloudModel, history) to "cloud"
-        return try { post(cfg.localUrl, "", "local", history) to "local" }
+        val sysPrompt = if (cfg.tools) BASE_PROMPT + TOOL_PROMPT else BASE_PROMPT
+        if (cfg.mode == "CLOUD") return post(cfg.cloudUrl, cfg.cloudKey, cfg.cloudModel, history, sysPrompt) to "cloud"
+        return try { post(cfg.localUrl, "", "local", history, sysPrompt) to "local" }
         catch (e: Exception) {
-            if (cfg.mode == "AUTO" && cfg.cloudKey.isNotBlank()) post(cfg.cloudUrl, cfg.cloudKey, cfg.cloudModel, history) to "cloud"
+            if (cfg.mode == "AUTO" && cfg.cloudKey.isNotBlank()) post(cfg.cloudUrl, cfg.cloudKey, cfg.cloudModel, history, sysPrompt) to "cloud"
             else throw e
         }
     }
 
-    private fun post(base: String, key: String, model: String, history: List<Msg>): String {
-        val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", SYSTEM_PROMPT))
+    private fun post(base: String, key: String, model: String, history: List<Msg>, sysPrompt: String): String {
+        val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", sysPrompt))
         for (m in history) {
             if (m.imgB64 == null && m.wavB64 == null) { msgs.put(JSONObject().put("role", m.role).put("content", m.text)); continue }
             val parts = JSONArray()
